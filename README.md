@@ -1,5 +1,5 @@
 # MicrobiomeFRM
-MicrobiomeFRM is an R library for analyzing the Beta-diversity in microbiome data, using a semiparametric functional response model (FRM)
+MicrobiomeFRM is an R library for analyzing the Beta-diversity in microbiome data, using a semiparametric functional response model (FRM) or distance-based regression.
 
 ## Installation
 ```{r}
