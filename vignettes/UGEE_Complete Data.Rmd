@@ -1,0 +1,439 @@
+---
+title: "Fit UGEE Models for Antibiotics Dataset"
+author: "Ke Xu, MS<br><small>Department of Biostatistics<br>Vanderbilt University Medical Center</small>"
+date: "<small>`r Sys.Date()`</small>"
+knit: (function(inputFile, encoding) { 
+      out_dir <- "/Users/jinyuanliu/Library/CloudStorage/OneDrive-VUMC/JL Method Paper/Big List/Aim3_Longitudinal_New/2025/SIM/Revision_July_2025/New Real Data/Share_with_JY_Oct_25";
+      rmarkdown::render(inputFile,
+                        encoding=encoding, 
+                        output_file=file.path(out_dir, paste0('/Reports-UGEE-Complete-BC-',Sys.Date(),'.html'))) })
+output: 
+  html_document:
+    toc: yes
+    toc_depth: 3
+    number_sections: true
+    toc_float:
+      collapsed: true
+      smooth_scroll: false
+    code_folding: hide
+    theme: cerulean
+css: rmarkdownstyle_x.css
+---
+<button id="toc-toggle" type="button" class="btn btn-default btn-xs code-folding-btn pull-right collapsed" onclick="toggletoc()"><span>Outline</span></button>
+<script>
+function toggletoc(){
+$("#TOC").toggle();
+}
+</script>
+
+***
+**Overview**<br>
+This report includes the results of UGEE model fitting using OTUs data at T1, and T2. Time -> Categorical, Group -> "MoCA low, Curiosity high" vs. 'Other'.
+
+
+<!-- -->
+**Variables**
+MOCA: <=24 vs. >24. The missing values were replaced with random values within the range of this variable.
+Curiosity: <=29 vs. >29. The missing values were replaced with random values within the range of this variable.
+  
+<!-- -->
+
+***
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# Load libraries
+rm(list = ls())
+#setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+
+library(readxl)
+library(MGLM)
+library(plyr)
+library(vegan)
+library(Rcpp)
+library(MASS)
+library(copula)
+library(matrixStats)
+library(dplyr)
+library(biomformat)
+library(readxl)
+library(vegan)
+library(dplyr)
+library(stringr)
+library(kableExtra)
+
+specify_decimal <- function(x, k) trimws(format(round(x, k), nsmall=k))
+```
+
+
+# Load data
+## Load OTU tables and meta data
+```{r, warning=FALSE, message=FALSE}
+# Import functions
+sourceCpp("chisq_stat.cpp")
+sourceCpp("dist2mat.cpp")
+
+# UGEE
+sourceCpp("ugee3_general_V2.cpp", showOutput = FALSE)
+
+Data1 <- read.delim("genera.counts.tsv", 
+                 header = TRUE,      # or FALSE if no header
+                 stringsAsFactors = FALSE)
+Meta1 <- read.delim("metadata.tsv", 
+                 header = TRUE,      # or FALSE if no header
+                 stringsAsFactors = FALSE)
+Other1 <- read.delim("mtb.tsv", 
+                 header = TRUE,      # or FALSE if no header
+                 stringsAsFactors = FALSE)
+
+otu_vars <- colnames(Data1)[-1]
+```
+
+
+```{r}
+# recode timepoint and ID
+master_dat <- full_join(Meta1, Data1)
+
+
+master_dat$Timepoint <- str_extract(master_dat$Sample, "[^\\.]+$")
+master_dat$ID <- str_extract(master_dat$Sample, "^[^\\.]+")
+master_dat <- subset(master_dat, Timepoint != 'Flare')
+
+```
+
+
+## Subset data (Timepoint = 0, 1, 2, 3, 4)
+```{r}
+master_dat_sub <- master_dat[which(master_dat$Timepoint %in% c('0', '1', '2', '3', "4")), ] 
+
+# select IDs with all timepoints
+master_dat_sub <- master_dat %>%
+  group_by(Subject) %>%                  
+  filter(all(c(0,1,2,3,4) %in% Timepoint)) %>%  
+  ungroup()
+
+
+# t0
+otu_t0 <- master_dat_sub %>%
+  filter(Timepoint == '0') %>%
+  dplyr::select(Sample, ID, Timepoint, Study.Group, any_of(otu_vars))
+
+# t1
+otu_t1 <- master_dat_sub %>%
+  filter(Timepoint == '1') %>%
+  dplyr::select(Sample, ID, Timepoint, Study.Group, any_of(otu_vars))
+
+# t2
+otu_t2 <- master_dat_sub %>%
+  filter(Timepoint == '2') %>%
+  dplyr::select(Sample, ID, Timepoint, Study.Group, any_of(otu_vars))
+
+# t3
+otu_t3 <- master_dat_sub %>%
+  filter(Timepoint == '3') %>%
+  dplyr::select(Sample, ID, Timepoint, Study.Group, any_of(otu_vars))
+
+# t4
+otu_t4 <- master_dat_sub %>%
+  filter(Timepoint == '4') %>%
+  dplyr::select(Sample, ID, Timepoint, Study.Group, any_of(otu_vars))
+
+```
+
+
+# Prepare parameters for function
+## fij.mat.all
+```{r}
+#[ ] fij.mat.all.MAR
+## T0
+otu_t <- otu_t0[, -c(1:4)] # row = samples, col = otus
+otu_t= otu_t/rowSums(otu_t) # covert to relative abundance
+d_Y.t = vegdist(
+  otu_t,
+  method = "bray",
+  binary = FALSE,
+  diag = FALSE,
+  upper = FALSE,
+  na.rm = FALSE
+) # beta diversity
+
+fij.mat.all.t0.com = dist2mat(d_Y.t, 128) # transfer to a matrix
+
+
+## T1
+otu_t <- otu_t1[, -c(1:4)] # row = samples, col = otus
+otu_t= otu_t/rowSums(otu_t) # covert to relative abundance
+d_Y.t = vegdist(
+  otu_t,
+  method = "bray",
+  binary = FALSE,
+  diag = FALSE,
+  upper = FALSE,
+  na.rm = FALSE
+) # beta diversity
+
+fij.mat.all.t1.com = dist2mat(d_Y.t, 128) # transfer to a matrix
+
+## T2
+otu_t <- otu_t2[, -c(1:4)] # row = samples, col = otus
+otu_t= otu_t/rowSums(otu_t) # covert to relative abundance
+d_Y.t = vegdist(
+  otu_t,
+  method = "bray",
+  binary = FALSE,
+  diag = FALSE,
+  upper = FALSE,
+  na.rm = FALSE
+) # beta diversity
+
+fij.mat.all.t2.com = dist2mat(d_Y.t, 128) # transfer to a matrix
+
+## T3
+otu_t <- otu_t3[, -c(1:4)] # row = samples, col = otus
+otu_t= otu_t/rowSums(otu_t) # covert to relative abundance
+d_Y.t = vegdist(
+  otu_t,
+  method = "bray",
+  binary = FALSE,
+  diag = FALSE,
+  upper = FALSE,
+  na.rm = FALSE
+) # beta diversity
+
+fij.mat.all.t3.com = dist2mat(d_Y.t, 128) # transfer to a matrix
+
+## T4
+otu_t <- otu_t4[, -c(1:4)] # row = samples, col = otus
+otu_t= otu_t/rowSums(otu_t) # covert to relative abundance
+d_Y.t = vegdist(
+  otu_t,
+  method = "bray",
+  binary = FALSE,
+  diag = FALSE,
+  upper = FALSE,
+  na.rm = FALSE
+) # beta diversity
+
+fij.mat.all.t4.com = dist2mat(d_Y.t, 128) # transfer to a matrix
+
+
+fij.mat.all <- list(fij.mat.all.t0.com,
+                    fij.mat.all.t1.com,
+                    fij.mat.all.t2.com,
+                    fij.mat.all.t3.com,
+                    fij.mat.all.t4.com)
+```
+
+
+
+
+## rij.all (no need)
+```{r}
+# no need, since we dont have any missing values
+
+#[ ] rij.all
+# 0 -> Missing; 1 -> completed
+
+## T2
+# Find rows with all missing values
+# Ri_t2 = ori_dat.t2[ ,2]
+# Ri_t2[!is.na(Ri_t2)] <- 1
+# Ri_t2[is.na(Ri_t2)] <- 0
+# rij.t2 = outer(Ri_t2, Ri_t2, FUN="*")
+
+
+# rij.all <- list(rij.t2)
+```
+
+
+## grp_all (Group C, D, and H)
+
+```{r}
+set.seed(32608)
+#[ ] grp_all
+group.vars<-master_dat_sub$Study.Group[which(master_dat_sub$Timepoint == 0)]
+
+group.num <- case_when(
+  group.vars == "C" ~ 1,
+  group.vars == "D" ~ 2,
+  group.vars == "H" ~ 3
+)
+```
+
+## z_mat1 (Age)
+```{r}
+#[ ] z_mat1
+# list of between-subject attributes formed by continuous var # age
+## T1
+age.t1<-master_dat_sub$Age[which(master_dat_sub$Timepoint == 0)]
+
+age = scale(age.t1)
+```
+
+## z_mat2 (BMI)
+```{r}
+#[ ] z_mat2
+# list of between-subject attributes formed by continuous var # age
+## T1
+bmi.t1<-master_dat_sub$BMI[which(master_dat_sub$Timepoint == 0)]
+
+bmi = scale(bmi.t1)
+
+#sum(is.na(bmi.t1))
+```
+
+## Theta and Sigma_theta calculation
+```{r}
+fit.ugee = ugee3_general(dij_all = fij.mat.all, grp_all = group.num, 
+                         z_ = as.matrix(cbind(age, bmi)),
+                                  interaction_type = "modality") 
+fit.ugee
+```
+
+# Define function for the Wald test
+```{r}
+library(MASS)  # for ginv
+
+getwald <- function(results, terms) {
+  betahat = results$theta[terms]
+  sigma_betahat = results$Sigma_theta[terms, terms]
+  
+  Wstat = t(betahat) %*% ginv(sigma_betahat) %*% betahat
+  df = length(terms)
+  pval = pchisq(Wstat, df = df, lower.tail = FALSE)
+  
+  return(pval)
+}
+```
+
+# test
+```{r}
+### Time Main Effect for Reference Group
+getwald(fit.ugee, terms = c(2:5))
+
+### Baseline Group Effect
+getwald(fit.ugee, terms = c(6:10))
+
+### Time * Group Interaction Effect
+getwald(fit.ugee, terms = c(11:30))
+```
+
+# Slopes of CC
+```{r}
+base_CC = exp(fit.ugee$theta[1]) ## base mean
+base_CC
+base_CC*exp(fit.ugee$theta[c(2:5)]) - base_CC*c(1,exp(fit.ugee$theta[c(2:4)])) ## slopes
+```
+
+# Slopes of DD
+```{r}
+base_DD = exp(fit.ugee$theta[6]) * base_CC ## base mean
+base_DD
+base_CC*exp(fit.ugee$theta[c(11:14)]) - base_CC*exp(fit.ugee$theta[c(6,11:13)]) ## slopes
+```
+
+# Slopes of HH
+```{r}
+base_HH = exp(fit.ugee$theta[7]) * base_CC ## base mean
+base_HH
+base_CC*exp(fit.ugee$theta[c(15:18)]) - base_CC*exp(fit.ugee$theta[c(7,15:17)]) ## slopes
+```
+
+# location effect
+```{r}
+getwald(fit.ugee, terms = c(6:7)) ### Baseline location diff
+getwald(fit.ugee, terms = c(11:14, 15:18)) ### location*time interaction
+```
+
+# scale effect
+```{r}
+getwald(fit.ugee, terms = c(8:10)) ### Baseline scale diff
+getwald(fit.ugee, terms = c(19:30)) ### scale*time interaction
+```
+
+# scale&location interaction effect
+```{r}
+getwald(fit.ugee, terms = c(11:14, 15:18,19:30)) ### scale*time interaction
+```
+
+### Fit GLMM-MiraKIT
+### prepare the data format
+```{r}
+##### prepare the data format ######
+meta = data.frame(cbind(
+      rep(group.num,5),
+      rep(age,5),
+      rep(bmi,5)))
+n.group = length(unique(master_dat_sub$Subject))
+meta$id = rep(c(1:n.group),5)
+meta$visit = c(rep(1,n.group),rep(2,n.group),
+               rep(3,n.group),rep(4,n.group),
+               rep(5,n.group))
+names(meta) = c("X_t","Z_1","Z_2","id","visit")
+meta$X_t = meta$X_t-1
+covs <- as.data.frame(cbind(meta$Z_1, meta$Z_2))
+```
+
+### Beta-div at 5 time points
+```{r}
+library(GLMMMiRKAT)
+library(lme4)
+library(Matrix)
+library(permute)
+### Beta-div at 5 time points
+Matrix_OTU = rbind(otu_t0[, -c(1:4)],otu_t1[, -c(1:4)],
+                   otu_t2[, -c(1:4)],otu_t3[, -c(1:4)],
+                   otu_t4[, -c(1:4)])
+if(requireNamespace("vegan")) {
+  D.BC = as.matrix(vegdist(Matrix_OTU, method="bray"))
+}
+##### Create kernel matrices
+if(requireNamespace("vegan")) {
+  K.BC = D2K(D.BC)
+}
+mean(K.BC); sd(K.BC)
+Ks = list(K.BC)
+
+```
+
+### Run GLMM-MiRKAT
+```{r}
+meta$X_t_binary_DD = ifelse(meta$X_t==1,1,0)
+# Run GLMM-MiRKAT
+GLMMMiRKAT = GLMMMiRKAT(meta$X_t_binary_DD, cov=covs, id=meta$id, Ks=Ks, model="binomial")
+GLMMMiRKAT
+
+otu_t0$Study.Group
+```
+
+### Run GLMM-MiRKAT
+```{r}
+meta$X_t_binary_CC = ifelse(meta$X_t==0,1,0)
+# Run GLMM-MiRKAT
+GLMMMiRKAT = GLMMMiRKAT(meta$X_t_binary_CC, cov=covs, id=meta$id, Ks=Ks, model="binomial")
+GLMMMiRKAT
+```
+
+### Git UGEE
+```{r}
+group_binary_DD = ifelse(group.num == 2, 1, 0)
+fit.ugee_DD = ugee3_general(dij_all = fij.mat.all, grp_all = group_binary_DD, 
+                         z_ = as.matrix(cbind(age, bmi)),
+                                  interaction_type = "modality") 
+fit.ugee_DD
+
+# scale&location interaction effect
+getwald(fit.ugee_DD, terms = c(2:17)) ### scale&location omnibus
+```
+
+### Git UGEE
+```{r}
+group_binary_CC = ifelse(group.num == 1, 1, 0)
+fit.ugee_CC = ugee3_general(dij_all = fij.mat.all, grp_all = group_binary_CC, 
+                         z_ = as.matrix(cbind(age, bmi)),
+                                  interaction_type = "modality") 
+fit.ugee_CC
+
+# scale&location interaction effect
+getwald(fit.ugee_CC, terms = c(2:17)) ### scale&location omnibus
+```
